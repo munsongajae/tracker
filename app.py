@@ -14,7 +14,7 @@ import time
 import plotly.express as px
 import plotly.graph_objects as go
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
 # --- 환경 변수 설정 ---
 load_dotenv()
@@ -132,17 +132,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def get_google_sheet():
-    SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    CREDENTIALS_FILE = 'credentials.json'
-    SPREADSHEET_ID = st.secrets.get("GOOGLE_SPREADSHEET_ID", os.getenv("GOOGLE_SPREADSHEET_ID"))
+    SCOPES = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    SPREADSHEET_ID = st.secrets.get("GOOGLE_SPREADSHEET_ID")
     try:
-        if not os.path.exists(CREDENTIALS_FILE):
-            st.error(f"오류: {CREDENTIALS_FILE} 파일이 존재하지 않습니다.")
-            return None
-        if not SPREADSHEET_ID:
-            st.error("오류: GOOGLE_SPREADSHEET_ID 환경 변수가 설정되지 않았습니다.")
-            return None
-        credentials = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, SCOPES)
+        credentials_info = dict(st.secrets["google_service_account"])
+        credentials = Credentials.from_service_account_info(credentials_info, scopes=SCOPES)
         client = gspread.authorize(credentials)
         sheet = client.open_by_key(SPREADSHEET_ID)
         return sheet

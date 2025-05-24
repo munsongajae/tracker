@@ -55,3 +55,11 @@ token.json
 .env.development.local
 .env.test.local
 .env.production.local 
+
+# Google credentials
+micro-runner-460507-e2-707ef0819ce9.json
+credentials.json
+token.json
+
+# Streamlit secrets
+.streamlit/secrets.toml
