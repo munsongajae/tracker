@@ -18,15 +18,9 @@ import plotly.graph_objects as go
 load_dotenv()
 NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID")
 NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET")
-GOOGLE_SHEET_PASSWORD = os.getenv("GOOGLE_SHEET_PASSWORD", "default_password")
-SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")
-
-# --- 구글 시트 연동 설정 ---
-SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-CREDENTIALS_FILE = 'micro-runner-460507-e2-707ef0819ce9.json'
 
 st.set_page_config(
-    page_title="급등주 추적기",
+    page_title="내 손안의 급등주 탐지기",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -94,6 +88,10 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] {
         padding: 0.5rem 1rem;
         margin: 0;
+        font-size: 1.25rem !important;
+        font-weight: bold !important;
+        padding-top: 0.7rem !important;
+        padding-bottom: 0.7rem !important;
     }
     .stTabs [data-baseweb="tab-panel"] {
         padding: 0.5rem 0;
@@ -122,27 +120,8 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 # 앱 제목
 st.markdown("""
-    <h1 style='text-align: center;'>급등주 추적기</h1>
+    <h1 style='text-align: center;'>내 손안의 급등주 탐지기</h1>
 """, unsafe_allow_html=True)
-
-def get_google_sheet():
-    """구글 시트 연결을 설정하고 반환합니다."""
-    try:
-        if not os.path.exists(CREDENTIALS_FILE):
-            st.error(f"오류: {CREDENTIALS_FILE} 파일이 존재하지 않습니다.")
-            return None
-            
-        if not SPREADSHEET_ID:
-            st.error("오류: GOOGLE_SPREADSHEET_ID 환경 변수가 설정되지 않았습니다.")
-            return None
-            
-        credentials = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, SCOPES)
-        client = gspread.authorize(credentials)
-        sheet = client.open_by_key(SPREADSHEET_ID)
-        return sheet
-    except Exception as e:
-        st.error(f"구글 시트 연결 중 오류 발생: {e}")
-        return None
 
 def load_company_info_from_krx_url(krx_url, column_names_map):
     """KRX에서 제공하는 URL로부터 상장법인목록 데이터를 HTML 테이블 형식으로 로드합니다."""
@@ -214,70 +193,6 @@ def load_company_info_from_krx_url(krx_url, column_names_map):
     except Exception as e_general:
         st.error(f"KRX 정보 처리 중 예상치 못한 오류 발생: {e_general}")
         return None
-
-def update_google_sheet(data_df, date_str):
-    """데이터프레임을 구글 시트에 업데이트합니다."""
-    if data_df is None or data_df.empty:
-        return False, "업데이트할 데이터가 없습니다."
-
-    max_retries = 3
-    retry_delay = 2
-
-    for attempt in range(max_retries):
-        try:
-            sheet = get_google_sheet()
-            if not sheet:
-                return False, "구글 시트 연결 실패"
-
-            year_month = f"{date_str[:4]}-{date_str[4:6]}"
-            worksheet_name = f"{year_month}"
-
-            try:
-                worksheet = sheet.worksheet(worksheet_name)
-            except gspread.exceptions.WorksheetNotFound:
-                # 새 워크시트 생성 시 충분한 크기로 생성
-                worksheet = sheet.add_worksheet(title=worksheet_name, rows=2000, cols=30)
-                time.sleep(retry_delay)
-
-            if not all(col in data_df.columns for col in OUTPUT_COLUMNS_WITH_REMARKS):
-                return False, "데이터프레임에 필요한 컬럼이 누락되었습니다."
-
-            # 기존 데이터 삭제 및 시트 크기 조정
-            worksheet.clear()
-            current_rows = worksheet.row_count
-            current_cols = worksheet.col_count
-            
-            # 필요한 행과 열 계산 (헤더 + 데이터)
-            needed_rows = len(data_df) + 1  # 헤더 행 포함
-            needed_cols = len(OUTPUT_COLUMNS_WITH_REMARKS)
-            
-            # 시트 크기 조정
-            if current_rows < needed_rows:
-                worksheet.add_rows(needed_rows - current_rows)
-            if current_cols < needed_cols:
-                worksheet.add_cols(needed_cols - current_cols)
-            
-            # 헤더 추가
-            worksheet.update('A1', [OUTPUT_COLUMNS_WITH_REMARKS])
-            time.sleep(retry_delay)
-
-            # 데이터를 한 번에 업데이트
-            data_to_update = data_df[OUTPUT_COLUMNS_WITH_REMARKS].values.tolist()
-            if data_to_update:
-                worksheet.update(f'A2:U{len(data_to_update)+1}', data_to_update)
-                time.sleep(retry_delay)
-
-            return True, f"구글 시트 업데이트 완료 (추가된 데이터: {len(data_df)}개)"
-
-        except gspread.exceptions.APIError as e:
-            if "Quota exceeded" in str(e) and attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
-                continue
-            return False, f"구글 시트 업데이트 실패: {str(e)}"
-        except Exception as e:
-            return False, f"구글 시트 업데이트 실패: {str(e)}"
-
-    return False, "최대 재시도 횟수를 초과했습니다."
 
 # --- 기존 스크립트의 헬퍼 함수들 ---
 OUTPUT_COLUMNS_WITH_REMARKS = [
@@ -600,24 +515,169 @@ def display_analysis_results(final_df_sorted, date_str, all_market_data_df, top_
 
     # 날짜 형식 변환 (YYYYMMDD -> YYYY년 MM월 DD일)
     formatted_date = f"{date_str[:4]}년 {date_str[4:6]}월 {date_str[6:8]}일"
-    st.subheader(f"{formatted_date} 시장 분석")
+    st.markdown(f"""
+        <h2 style='text-align: center;'>{formatted_date} 시장 분석</h3>
+    """, unsafe_allow_html=True)
 
     # 전체 종목과 급등주+특징주 분석을 탭으로 구분
-    tab1, tab2 = st.tabs(["전체 종목", "급등주+특징주 분석"])
+    tab1, tab2 = st.tabs(["급등주+특징주 분석", "전체 종목 분석"])
     
     with tab1:
-        st.subheader(f"전체 종목 (총 {len(all_market_data_df):,}개 종목)")
+        st.subheader("급등주+특징주 분석")
         
-        # 전체 시장 데이터 표시
+        # 상단 지표 카드들을 한 줄에 배치
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            high_volume_count = len(final_df_sorted[final_df_sorted['거래대금'] >= 10000000000])
+            st.metric("거래대금 100억 이상", f"{high_volume_count:,}")
+        
+        with col2:
+            top_featured_count = len(final_df_sorted[final_df_sorted['비고'] == f"top{top_n_count}+특징주"])
+            st.metric("Top N + 특징주", f"{top_featured_count:,}")
+        
+        with col3:
+            featured_count = len(final_df_sorted[final_df_sorted['비고'] == "특징주"])
+            st.metric("특징주", f"{featured_count:,}")
+        
+        with col4:
+            total_count = len(final_df_sorted)
+            st.metric("전체 분석 종목", f"{total_count:,}")
+        
+        # 상세 결과 테이블
+        display_df = final_df_sorted.copy()
+        numeric_columns = ['시가', '고가', '저가', '종가', '거래량', '거래대금']
+        for col in numeric_columns:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(format_number)
+        display_df['등락률'] = display_df['등락률'].apply(format_percentage)
+        
+        # 거래대금 100억 이상 강조를 위한 스타일 함수
+        def highlight_high_amount(val):
+            try:
+                amount = float(str(val).replace(',', ''))
+                return 'color: #FF0000' if amount >= 10000000000 else None
+            except:
+                return None
+        
+        styled_df = display_df.style.map(color_negative_red, subset=['등락률']).map(highlight_high_amount, subset=['거래대금'])
+        st.dataframe(styled_df, use_container_width=True)
+
+        # 하단에만 다운로드/저장 버튼
+        st.subheader("급등주+특징주 데이터 내보내기")
+        excel_data = get_excel_data(final_df_sorted, date_str)
+        txt_data = get_txt_data(final_df_sorted)
+        col1, col2, col3 = st.columns([1,1,1])
+        with col1:
+            st.download_button(
+                label="Excel 다운로드",
+                data=excel_data,
+                file_name=f"stock_analysis_{date_str}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"excel_download_{date_str}"
+            )
+        with col2:
+            st.download_button(
+                label="TXT 다운로드",
+                data=txt_data,
+                file_name=f"stock_analysis_{date_str}.txt",
+                mime="text/plain",
+                key=f"txt_download_{date_str}"
+            )
+        with col3:
+            if 'db_save_state' not in st.session_state:
+                st.session_state.db_save_state = None
+            if 'db_overwrite_state' not in st.session_state:
+                st.session_state.db_overwrite_state = None
+            if st.button("데이터베이스 저장", key=f"db_save_{date_str}"):
+                st.session_state.db_save_state = "checking"
+                st.session_state.selected_tab = "데이터베이스"
+                st.rerun()
+            if st.session_state.db_save_state == "checking":
+                success, message = save_to_database(final_df_sorted)
+                if message == "already_exists":
+                    st.warning("이미 저장된 데이터가 있습니다. 덮어쓰시겠습니까?")
+                    overwrite_col1, overwrite_col2 = st.columns(2)
+                    with overwrite_col1:
+                        if st.button("덮어쓰기", key=f"overwrite_{date_str}"):
+                            st.session_state.db_overwrite_state = True
+                            st.rerun()
+                    with overwrite_col2:
+                        if st.button("취소", key=f"cancel_{date_str}"):
+                            st.session_state.db_save_state = None
+                            st.session_state.db_overwrite_state = None
+                            st.rerun()
+                elif success:
+                    st.success(message)
+                    st.session_state.db_save_state = None
+                else:
+                    st.error(message)
+                    st.session_state.db_save_state = None
+            if st.session_state.db_overwrite_state:
+                with st.spinner("데이터를 덮어쓰는 중..."):
+                    success, message = save_to_database(final_df_sorted, overwrite=True)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+                    st.session_state.db_save_state = None
+                    st.session_state.db_overwrite_state = None
+                    st.rerun()
+
+    with tab2:
+        st.subheader(f"전체 종목 (총 {len(all_market_data_df):,}개 종목)")
+
+        # 전체 시장 데이터 표시 (가장 위로)
         market_display_df = all_market_data_df.copy()
         numeric_columns = ['시가', '고가', '저가', '종가', '등락률', '거래량', '거래대금']
         for col in numeric_columns:
             if col in market_display_df.columns:
                 market_display_df[col] = market_display_df[col].apply(format_number)
         market_display_df['등락률'] = market_display_df['등락률'].apply(format_percentage)
-        
         styled_market_df = market_display_df.style.map(color_negative_red, subset=['등락률'])
         st.dataframe(styled_market_df, use_container_width=True, height=400)
+        st.markdown('<div style="height: 24px;"></div>', unsafe_allow_html=True)
+
+        # 등락률 Top30, 거래대금 Top30 데이터
+        top30_rate = all_market_data_df.nlargest(30, '등락률')
+        top30_amount = all_market_data_df.nlargest(30, '거래대금')
+
+        # 4개 컬럼으로 한 줄에 배치
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.markdown("<div style='text-align:center; font-weight:bold; font-size:1.1em;'>등락률 Top30</div>", unsafe_allow_html=True)
+            top30_rate_table = top30_rate[['종목명', '등락률', '업종', '주요제품']].copy()
+            top30_rate_table['등락률'] = top30_rate_table['등락률'].apply(format_percentage)
+            st.dataframe(
+                top30_rate_table.style.set_table_styles([
+                    {'selector': 'td', 'props': [('font-size', '0.95em')]},
+                    {'selector': 'th', 'props': [('font-size', '0.95em')]}
+                ]),
+                use_container_width=True, hide_index=True
+            )
+
+        with col2:
+            st.markdown("<div style='text-align:center; font-weight:bold; font-size:1.1em;'>등락률 Top30 시장별 분포</div>", unsafe_allow_html=True)
+            fig1 = px.pie(top30_rate, names='시장', title=None)
+            st.plotly_chart(fig1, use_container_width=True)
+
+        with col3:
+            st.markdown("<div style='text-align:center; font-weight:bold; font-size:1.1em;'>거래대금 Top30</div>", unsafe_allow_html=True)
+            top30_amount_table = top30_amount[['종목명', '거래대금', '업종', '주요제품']].copy()
+            top30_amount_table['거래대금'] = top30_amount_table['거래대금'].apply(format_number)
+            st.dataframe(
+                top30_amount_table.style.set_table_styles([
+                    {'selector': 'td', 'props': [('font-size', '0.95em')]},
+                    {'selector': 'th', 'props': [('font-size', '0.95em')]}
+                ]),
+                use_container_width=True, hide_index=True
+            )
+
+        with col4:
+            st.markdown("<div style='text-align:center; font-weight:bold; font-size:1.1em;'>거래대금 Top30 시장별 분포</div>", unsafe_allow_html=True)
+            fig2 = px.pie(top30_amount, names='시장', title=None)
+            st.plotly_chart(fig2, use_container_width=True)
 
         # 전체 시장 거래대금 표시
         try:
@@ -687,110 +747,9 @@ def display_analysis_results(final_df_sorted, date_str, all_market_data_df, top_
                     except:
                         return None
                 st.markdown("#### KOSPI/KOSDAQ 투자자별 거래대금")
-                st.dataframe(df_merged.style.map(style_color), use_container_width=True)
+                st.dataframe(df_merged.style.map(style_color), use_container_width=True, hide_index=True)
         except Exception as e:
             st.warning(f"KOSPI/KOSDAQ 투자자 정보 조회 중 오류 발생: {e}")
-
-    with tab2:
-        st.subheader("급등주+특징주 분석")
-        
-        # 상단 지표 카드들을 한 줄에 배치
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            high_volume_count = len(final_df_sorted[final_df_sorted['거래대금'] >= 10000000000])
-            st.metric("거래대금 100억 이상", f"{high_volume_count:,}")
-        
-        with col2:
-            top_featured_count = len(final_df_sorted[final_df_sorted['비고'] == f"top{top_n_count}+특징주"])
-            st.metric("Top N + 특징주", f"{top_featured_count:,}")
-        
-        with col3:
-            featured_count = len(final_df_sorted[final_df_sorted['비고'] == "특징주"])
-            st.metric("특징주", f"{featured_count:,}")
-        
-        with col4:
-            total_count = len(final_df_sorted)
-            st.metric("전체 분석 종목", f"{total_count:,}")
-        
-        # 상세 결과 테이블
-        display_df = final_df_sorted.copy()
-        numeric_columns = ['시가', '고가', '저가', '종가', '거래량', '거래대금']
-        for col in numeric_columns:
-            if col in display_df.columns:
-                display_df[col] = display_df[col].apply(format_number)
-        display_df['등락률'] = display_df['등락률'].apply(format_percentage)
-        
-        # 거래대금 100억 이상 강조를 위한 스타일 함수
-        def highlight_high_amount(val):
-            try:
-                amount = float(str(val).replace(',', ''))
-                return 'color: #FF0000' if amount >= 10000000000 else None
-            except:
-                return None
-        
-        styled_df = display_df.style.map(color_negative_red, subset=['등락률']).map(highlight_high_amount, subset=['거래대금'])
-        st.dataframe(styled_df, use_container_width=True)
-
-        # 데이터 저장 버튼들 (이동)
-        st.subheader("급등주+특징주 데이터 내보내기")
-        excel_data = get_excel_data(final_df_sorted, date_str)
-        txt_data = get_txt_data(final_df_sorted)
-        col1, col2, col3 = st.columns([1,1,1])
-        with col1:
-            st.download_button(
-                label="Excel 다운로드",
-                data=excel_data,
-                file_name=f"stock_analysis_{date_str}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"excel_download_{date_str}"
-            )
-        with col2:
-            st.download_button(
-                label="TXT 다운로드",
-                data=txt_data,
-                file_name=f"stock_analysis_{date_str}.txt",
-                mime="text/plain",
-                key=f"txt_download_{date_str}"
-            )
-        with col3:
-            if 'db_save_state' not in st.session_state:
-                st.session_state.db_save_state = None
-            if 'db_overwrite_state' not in st.session_state:
-                st.session_state.db_overwrite_state = None
-            if st.button("데이터베이스 저장", key=f"db_save_{date_str}"):
-                st.session_state.db_save_state = "checking"
-                st.rerun()
-            if st.session_state.db_save_state == "checking":
-                success, message = save_to_database(final_df_sorted)
-                if message == "already_exists":
-                    st.warning("이미 저장된 데이터가 있습니다. 덮어쓰시겠습니까?")
-                    overwrite_col1, overwrite_col2 = st.columns(2)
-                    with overwrite_col1:
-                        if st.button("덮어쓰기", key=f"overwrite_{date_str}"):
-                            st.session_state.db_overwrite_state = True
-                            st.rerun()
-                    with overwrite_col2:
-                        if st.button("취소", key=f"cancel_{date_str}"):
-                            st.session_state.db_save_state = None
-                            st.session_state.db_overwrite_state = None
-                            st.rerun()
-                elif success:
-                    st.success(message)
-                    st.session_state.db_save_state = None
-                else:
-                    st.error(message)
-                    st.session_state.db_save_state = None
-            if st.session_state.db_overwrite_state:
-                with st.spinner("데이터를 덮어쓰는 중..."):
-                    success, message = save_to_database(final_df_sorted, overwrite=True)
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
-                    st.session_state.db_save_state = None
-                    st.session_state.db_overwrite_state = None
-                    st.rerun()
 
 def init_database():
     """SQLite 데이터베이스 초기화"""
@@ -798,7 +757,7 @@ def init_database():
         conn = sqlite3.connect('stock_analysis.db')
         c = conn.cursor()
         
-        # 테이블이 없을 때만 생성
+        # 테이블이 없을 때만 생성 (테마, AI_한줄요약 컬럼 포함)
         c.execute('''
             CREATE TABLE IF NOT EXISTS stock_analysis (
                 날짜 TEXT,
@@ -815,6 +774,8 @@ def init_database():
                 거래대금 INTEGER,
                 시장 TEXT,
                 비고 TEXT,
+                테마 TEXT,
+                AI_한줄요약 TEXT,
                 기사제목1 TEXT,
                 기사요약1 TEXT,
                 기사링크1 TEXT,
@@ -834,7 +795,14 @@ def init_database():
             )
         ''')
         
-        # 기존 테이블에 새 컬럼 추가
+        # 기존 테이블에 새 컬럼 추가 (이미 있으면 무시)
+        for col in ["테마", "AI_한줄요약"]:
+            try:
+                c.execute(f"ALTER TABLE stock_analysis ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
+        
+        # 기존 테이블에 새 기사 컬럼 추가
         try:
             c.execute("ALTER TABLE stock_analysis ADD COLUMN 기사제목4 TEXT")
             c.execute("ALTER TABLE stock_analysis ADD COLUMN 기사요약4 TEXT")
@@ -1111,6 +1079,69 @@ def create_industry_distribution_bar(df):
     )
     return fig
 
+def batch_generate_theme_and_summary_with_perplexity_by_name(df, batch_size=10):
+    import requests, os
+    def parse_perplexity_markdown_response(output):
+        results = {}
+        current_stock = None
+        theme = ""
+        summary = ""
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("### "):
+                if current_stock and (theme or summary):
+                    results[current_stock] = (theme, summary)
+                current_stock = line.replace("###", "").strip()
+                theme = ""
+                summary = ""
+            elif line.startswith("- **테마**:"):
+                theme = line.replace("- **테마**:", "").strip()
+            elif line.startswith("- **AI_한줄요약**:"):
+                summary = line.replace("- **AI_한줄요약**:", "").strip()
+        if current_stock and (theme or summary):
+            results[current_stock] = (theme, summary)
+        return results
+
+    results = {}
+    for start in range(0, len(df), batch_size):
+        batch = df.iloc[start:start+batch_size]
+        prompt = (
+            "아래는 여러 종목명 리스트입니다.\n"
+            "각 종목에 대해 웹 검색을 참고해서\n"
+            "[테마]: (1~3개, 예: 2차전지, 양극재, 음극재, 전해질, 전고체배터리, 리튬, 희토류, 반도체, 파운드리, AI, 챗GPT, AI반도체, 빅데이터, 스마트팩토리, 로봇, 자율주행, 모빌리티, 전기차, 수소차, 전력반도체, 디스플레이, OLED, QD, UAM, 클라우드, 5G, 6G, 메타버스, VR, AR, XR, IoT, 모바일, 앱, 사이버보안, 디지털화폐, 블록체인, NFT, 이커머스, OTT, 콘텐츠, 웹툰, 게임, 모바일게임, 스트리밍, 미디어, 바이오, 제약, mRNA, 항암제, 줄기세포, 유전자치료제, 의료기기, AI진단, 정밀의료, 스마트헬스케어, 건강기능식품, 원전, SMR, 탄소중립, 풍력, 태양광, 수소경제, 전력시장, 재건축, 재개발, 공공주택, SOC투자, 방산, 국방예산, 디지털정부, 교육개혁, 저출산, 고령화, 데이터3법, 반도체법, IRA법, RCEP, FTA, 정치인테마, 리오프닝, 여행, 항공, 면세점, 화장품, 역직구, 엔터, KPOP, 한류, 중국소비, 일본관광, 중동이슈, 우크라이나, 국제유가, 금리인상, 환율수혜, 달러강세, 곡물, 사료, 식량위기, ESG, 신규상장, IPO, 스팩합병, 자회사상장, M&A, 경영권분쟁, 실적호전, 적자탈출, 자사주매입, 투자주의종목, 상폐위기, 코스닥150편입, 거래정지해제)\n"
+            "[AI_한줄요약]: (최근 이슈나 상승/하락 이유를 한 문장으로, 60토큰을 넘지 않게, 요약 형식으로, 주어 서술어 생략, 주제 중심으로 작성 )\n"
+            "**표시나 [1][2]같은 출처 관련 표시도 넣지 말 것"
+            "형식:\n"
+            "### 종목명\n- **테마**: ○○, ○○\n- **AI_한줄요약**: ○○○○○○\n\n"
+        )
+        for idx, row in batch.iterrows():
+            prompt += f"[{row['종목명']}]\n"
+        try:
+            response = requests.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {os.getenv('PERPLEXITY_API_KEY')}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "sonar",
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.4,
+                    "max_tokens": 3000
+                },
+                timeout=60
+            )
+            resp_json = response.json()
+            print("Perplexity API 응답:", resp_json)
+            output = resp_json.get("choices", [])[0].get("message", {}).get("content", "")
+            results.update(parse_perplexity_markdown_response(output))
+        except Exception as e:
+            print("Perplexity API 호출 오류:", e)
+            continue
+    return results
+
 # --- Streamlit UI ---
 
 # 앱 시작시 데이터베이스 초기화
@@ -1124,7 +1155,7 @@ if 'analysis_date' not in st.session_state:
 if 'all_market_data' not in st.session_state:
     st.session_state.all_market_data = None
 
-# 3개의 탭 생성
+# 3개의 탭 생성 (복원)
 tab1, tab2, tab3 = st.tabs(["실시간 분석", "데이터베이스", "인포그래픽"])
 
 # 실시간 분석 탭
@@ -1153,30 +1184,11 @@ with tab1:
             value=500,
             step=1
         )
-    
+
     # 분석 실행 버튼과 다운로드 버튼을 나란히 배치
-    col1, col2, col3 = st.columns([2,1,1])
+    col1, _, _ = st.columns([2,1,1])
     with col1:
         run_analysis = st.button("분석 실행", type="primary")
-    
-    # 분석 결과가 있을 때만 다운로드 버튼 표시
-    if st.session_state.analysis_results is not None:
-        with col2:
-            excel_data = get_excel_data(st.session_state.analysis_results, st.session_state.analysis_date)
-            st.download_button(
-                label="Excel 다운로드",
-                data=excel_data,
-                file_name=f"stock_analysis_{st.session_state.analysis_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        with col3:
-            txt_data = get_txt_data(st.session_state.analysis_results)
-            st.download_button(
-                label="TXT 다운로드",
-                data=txt_data,
-                file_name=f"stock_analysis_{st.session_state.analysis_date}.txt",
-                mime="text/plain"
-            )
 
     # 분석 실행
     if run_analysis:
@@ -1225,10 +1237,10 @@ with tab1:
                 stock_name = row['종목명']
                 if stock_name in processed_stocks:
                     continue
-                    
-                progress_bar.progress(0.35 + (idx/len(top_n_df))*0.20, 
+
+                progress_bar.progress(0.35 + (idx/len(top_n_df))*0.20,
                     text=f"Top N 종목 처리 중... ({idx}/{len(top_n_df)}) - {stock_name}")
-                    
+
                 processed_stocks.add(stock_name)
                 stock_info = {
                     '날짜': date_str,
@@ -1246,7 +1258,7 @@ with tab1:
                     '시장': row['시장'],
                     '비고': ''
                 }
-                
+
                 # 기사 컬럼 초기화
                 initialize_article_columns(stock_info)
 
@@ -1257,10 +1269,10 @@ with tab1:
                     stock_info['기사제목1'] = first_article['title']
                     stock_info['기사요약1'] = first_article['description']
                     stock_info['기사링크1'] = first_article['link']
-                    
+
                     # 추가 기사 4개 검색
                     if NAVER_CLIENT_ID and NAVER_CLIENT_SECRET:
-                        progress_bar.progress(0.35 + (idx/len(top_n_df))*0.20, 
+                        progress_bar.progress(0.35 + (idx/len(top_n_df))*0.20,
                             text=f"Top N 종목 추가 기사 검색 중... ({idx}/{len(top_n_df)}) - {stock_name}")
                         additional_articles = search_stock_articles_by_date(
                             stock_name,
@@ -1279,7 +1291,7 @@ with tab1:
                     stock_info['비고'] = f"top{top_n_count}"
                     # 일반 종목은 기사 5개 검색
                     if NAVER_CLIENT_ID and NAVER_CLIENT_SECRET:
-                        progress_bar.progress(0.35 + (idx/len(top_n_df))*0.20, 
+                        progress_bar.progress(0.35 + (idx/len(top_n_df))*0.20,
                             text=f"Top N 종목 기사 검색 중... ({idx}/{len(top_n_df)}) - {stock_name}")
                         articles = search_stock_articles_by_date(
                             stock_name,
@@ -1301,7 +1313,7 @@ with tab1:
             progress_bar.progress(0.60, text="특징주 정보 수집 시작...")
             featured_stocks = [stock for stock in featured_stock_info.keys() if stock not in processed_stocks]
             for idx, stock_name in enumerate(featured_stocks, 1):
-                progress_bar.progress(0.60 + (idx/len(featured_stocks))*0.20, 
+                progress_bar.progress(0.60 + (idx/len(featured_stocks))*0.20,
                     text=f"특징주 정보 처리 중... ({idx}/{len(featured_stocks)}) - {stock_name}")
                 try:
                     stock_row = all_market_data_df[all_market_data_df['종목명'] == stock_name].iloc[0]
@@ -1321,19 +1333,19 @@ with tab1:
                         '시장': stock_row['시장'],
                         '비고': '특징주'
                     }
-                    
+
                     # 기사 컬럼 초기화
                     initialize_article_columns(stock_info)
-                    
+
                     # 첫 번째 기사는 특징주 기사
                     first_article = featured_stock_info[stock_name][0]
                     stock_info['기사제목1'] = first_article['title']
                     stock_info['기사요약1'] = first_article['description']
                     stock_info['기사링크1'] = first_article['link']
-                    
+
                     # 추가 기사 4개 검색
                     if NAVER_CLIENT_ID and NAVER_CLIENT_SECRET:
-                        progress_bar.progress(0.60 + (idx/len(featured_stocks))*0.20, 
+                        progress_bar.progress(0.60 + (idx/len(featured_stocks))*0.20,
                             text=f"특징주 추가 기사 검색 중... ({idx}/{len(featured_stocks)}) - {stock_name}")
                         additional_articles = search_stock_articles_by_date(
                             stock_name,
@@ -1343,13 +1355,13 @@ with tab1:
                             max_count=4,
                             match_date=True
                         )
-                        
+
                         # 기사2~5에 매핑
                         for i, article in enumerate(additional_articles, 2):
                             stock_info[f'기사제목{i}'] = article['title']
                             stock_info[f'기사요약{i}'] = article['description']
                             stock_info[f'기사링크{i}'] = article['link']
-                    
+
                     final_data_list.append(stock_info)
                     processed_stocks.add(stock_name)
                 except Exception as e:
@@ -1362,6 +1374,36 @@ with tab1:
             final_df = pd.DataFrame(final_data_list)
             progress_bar.progress(0.90, text="데이터 정렬 중...")
             final_df_sorted = final_df.sort_values(by='등락률', ascending=False)
+
+            # Perplexity AI 요약 및 테마 일괄 추출 (종목명만 사용)
+            final_df_sorted["테마"] = ""
+            final_df_sorted["AI_한줄요약"] = ""
+            if not final_df_sorted.empty:
+                progress_bar.progress(0.92, text="AI 테마/요약 일괄 생성 중...")
+                results = batch_generate_theme_and_summary_with_perplexity_by_name(final_df_sorted, batch_size=10)
+                final_df_sorted["테마"] = final_df_sorted["종목명"].map(lambda x: results.get(x, ("",""))[0])
+                final_df_sorted["AI_한줄요약"] = final_df_sorted["종목명"].map(lambda x: results.get(x, ("",""))[1])
+                progress_bar.progress(0.99, text="AI 테마/요약 반영 완료")
+
+            # DB 컬럼명과 일치시키기 (AI_한줄요약 → AI_한줄요약)
+            if "AI_한줄요약" in final_df_sorted.columns:
+                final_df_sorted.rename(columns={"AI_한줄요약": "AI_한줄요약"}, inplace=True)
+
+            # 컬럼 순서 및 DB 저장 컬럼 리스트 명시
+            db_columns = [
+                '날짜', '티커', '종목명', '테마', 'AI_한줄요약',  # 종목명 뒤에 테마, AI_한줄요약
+                '업종', '주요제품', '시가', '고가', '저가', '종가', '등락률', '거래량', '거래대금', '시장', '비고',
+                '기사제목1', '기사요약1', '기사링크1',
+                '기사제목2', '기사요약2', '기사링크2',
+                '기사제목3', '기사요약3', '기사링크3',
+                '기사제목4', '기사요약4', '기사링크4',
+                '기사제목5', '기사요약5', '기사링크5'
+            ]
+            for col in db_columns:
+                if col not in final_df_sorted.columns:
+                    final_df_sorted[col] = ""
+            final_df_sorted = final_df_sorted[db_columns]
+
             progress_bar.progress(0.95, text="분석 결과 저장 중...")
 
             # 분석 결과를 세션 상태에 저장
@@ -1380,7 +1422,7 @@ with tab1:
             st.error(f"분석 중 오류가 발생했습니다: {str(e)}")
             st.error("상세 오류:")
             st.exception(e)
-    
+
     # 이전 분석 결과 표시 (세션에 저장된 결과가 있을 경우)
     elif st.session_state.analysis_results is not None:
         display_analysis_results(
@@ -1392,10 +1434,9 @@ with tab1:
 
 # 데이터베이스 탭
 with tab2:
-    st.subheader("급등주+특징주 분석 결과 기간별 조회")
-    
-    # 저장된 날짜 목록 가져오기
     saved_dates = get_saved_dates()
+    st.subheader("급등주+특징주 분석 결과 기간별 조회")
+    # 저장된 날짜 목록 가져오기
     if saved_dates:
         # 기간 선택 UI
         col1, col2 = st.columns(2)
@@ -1415,13 +1456,28 @@ with tab2:
                 max_value=datetime.strptime(max(saved_dates), '%Y%m%d').date(),
                 format="YYYY-MM-DD"
             )
-        
+
         if start_date <= end_date:
             start_date_str = start_date.strftime('%Y%m%d')
             end_date_str = end_date.strftime('%Y%m%d')
             period_data = get_data_by_date_range(start_date_str, end_date_str)
-            
+
             if not period_data.empty:
+                # 컬럼 순서 재정렬: 종목명 뒤에 테마, AI_한줄요약
+                db_columns = [
+                    '날짜', '티커', '종목명', '테마', 'AI_한줄요약',
+                    '업종', '주요제품', '시가', '고가', '저가', '종가', '등락률', '거래량', '거래대금', '시장', '비고',
+                    '기사제목1', '기사요약1', '기사링크1',
+                    '기사제목2', '기사요약2', '기사링크2',
+                    '기사제목3', '기사요약3', '기사링크3',
+                    '기사제목4', '기사요약4', '기사링크4',
+                    '기사제목5', '기사요약5', '기사링크5'
+                ]
+                for col in db_columns:
+                    if col not in period_data.columns:
+                        period_data[col] = ""
+                period_data = period_data[db_columns]
+
                 # 상세 결과 테이블
                 display_df = period_data.copy()
                 numeric_columns = ['시가', '고가', '저가', '종가', '거래량', '거래대금']
@@ -1429,10 +1485,10 @@ with tab2:
                     if col in display_df.columns:
                         display_df[col] = display_df[col].apply(format_number)
                 display_df['등락률'] = display_df['등락률'].apply(format_percentage)
-                
+
                 styled_df = display_df.style.map(color_negative_red, subset=['등락률'])
                 st.dataframe(styled_df, use_container_width=True)
-                
+
                 # 데이터 내보내기
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1460,14 +1516,14 @@ with tab2:
 
 # 인포그래픽 탭
 with tab3:
+    saved_dates = get_saved_dates()
     st.subheader("급등주+특징주 기간별 분석 인포그래픽")
-    
     # 저장된 전체 날짜 범위 확인
     if saved_dates:
         saved_dates_dt = [datetime.strptime(date, '%Y%m%d').date() for date in saved_dates]
         min_date = min(saved_dates_dt)
         max_date = max(saved_dates_dt)
-        
+
         # 기간 선택 UI
         col1, col2 = st.columns(2)
         with col1:
@@ -1490,13 +1546,13 @@ with tab3:
                 format="YYYY-MM-DD",
                 key="viz_end_date"
             )
-        
+
         if viz_start_date <= viz_end_date:
             # 선택된 기간의 데이터 조회
             viz_start_date_str = viz_start_date.strftime('%Y%m%d')
             viz_end_date_str = viz_end_date.strftime('%Y%m%d')
             period_data = get_data_by_date_range(viz_start_date_str, viz_end_date_str)
-            
+
             if not period_data.empty:
                 # 4개의 차트를 2x2 그리드로 배치
                 col1, col2 = st.columns(2)
@@ -1516,10 +1572,56 @@ with tab3:
 # 도움말
 with st.expander("도움말"):
     st.markdown("""
-    ### 사용 방법
-    1. 조회 날짜: 분석할 날짜를 선택하세요.
-                *영업일이 아니거나 장중에 분석하면 기사 수가 적을 수 있습니다.  
-    2. 상위 종목수: 등락률 기준 상위 종목 수를 입력하세요.
-    3. 특징주 기사 검색수: 네이버에서 특징주 키워드로 검색할 기사 수를 입력하세요.
-    4. 분석 실행 버튼을 클릭하여 결과를 확인하세요.
+    ## 📖 사용 가이드
+
+    이 앱은 실시간 시장 데이터와 뉴스 분석을 통해 급등주와 특징주를 탐지하고, 다양한 시각화와 데이터 내보내기 기능을 제공합니다.
+
+    ---
+    ### 1️⃣ 실시간 분석 탭
+    - **조회 날짜**: 분석할 날짜를 선택합니다. (영업일 기준, 장중에는 기사 수가 적을 수 있습니다)
+    - **상위 종목수**: 등락률 기준으로 상위 몇 개 종목을 분석할지 입력합니다. (예: 40)
+    - **특징주 기사 검색수**: 네이버 뉴스에서 '특징주' 키워드로 검색할 기사 수를 입력합니다. (예: 500)
+    - **분석 실행**: 버튼을 클릭하면 실시간 시장 데이터와 뉴스 기사 분석이 시작됩니다.
+    - **분석 결과**: 
+        - '급등주+특징주 분석' 탭에서 Top N 종목과 특징주, 관련 뉴스 기사, 데이터 내보내기(Excel, TXT, DB 저장) 기능을 제공합니다.
+        - '전체 종목 분석' 탭에서 전체 시장 데이터, Top30 등락률/거래대금, 투자자별 거래대금, 시장별 투자자 정보 등을 확인할 수 있습니다.
+
+    ---
+    ### 2️⃣ 데이터베이스 탭
+    - **기간별 조회**: 저장된 분석 결과를 시작/종료 날짜로 조회할 수 있습니다.
+    - **결과 테이블**: 해당 기간의 모든 분석 결과를 표로 확인할 수 있습니다.
+    - **데이터 내보내기**: Excel, TXT 파일로 다운로드할 수 있습니다.
+
+    ---
+    ### 3️⃣ 인포그래픽 탭
+    - **기간 선택**: 저장된 데이터 중 원하는 기간을 선택합니다.
+    - **시각화**: 시장별 종목 분포, 등락률 상위 10개, 거래량 상위 10개, 업종별 종목 수 분포 등 다양한 차트를 제공합니다.
+
+    ---
+    ### 주요 기능 설명
+    - **Top N + 특징주**: 등락률 상위 N개 종목과 뉴스에서 특징주로 언급된 종목
+    - **특징주**: 네이버 기사에서 특징주로 언급된 종목
+    - **DB 저장**: 분석 결과를 데이터베이스에 저장하여 나중에 조회/시각화할 수 있습니다.
+    - **Excel/TXT 다운로드**: 분석 결과를 파일로 저장할 수 있습니다.
+
+    ---
+    ### 결과 해석 팁
+    - **거래대금 100억 이상**: 대형 거래가 발생한 종목을 빠르게 파악할 수 있습니다.
+    - **Top N + 특징주/특징주**: 뉴스와 시장 데이터가 동시에 주목하는 종목을 확인하세요.
+    - **시장별/업종별 분포**: 특정 시장이나 업종에 급등주가 몰려 있는지 한눈에 볼 수 있습니다.
+
+    ---
+    ### 자주 묻는 질문 (FAQ)
+    - **Q. 분석 결과가 비어있어요!**
+        - 영업일이 아니거나, 장 마감 전에는 데이터/뉴스가 부족할 수 있습니다.
+        - 네트워크 연결 또는 API 키 설정을 확인하세요.
+    - **Q. DB 저장이 안 돼요!**
+        - 같은 날짜 데이터가 이미 저장된 경우, 덮어쓰기 버튼을 눌러주세요.
+    - **Q. 뉴스가 너무 적게 나와요!**
+        - 기사 검색수를 늘리거나, 장 마감 후에 다시 시도해보세요.
+
+    ---
+    ### 문의 및 피드백
+    - 오류/건의사항은 개발자에게 직접 문의해 주세요.
+    - [이메일: hellolk2000@gmail.com]
     """)
