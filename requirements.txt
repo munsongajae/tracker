@@ -1,0 +1,10 @@
+streamlit==1.32.0
+pandas==2.2.1
+pykrx==1.0.40
+requests==2.31.0
+python-dotenv==1.0.1
+xlsxwriter==3.1.9
+plotly==5.19.0
+lxml==5.1.0
+beautifulsoup4==4.12.3
+openpyxl==3.1.2 
