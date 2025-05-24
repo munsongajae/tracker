@@ -13,14 +13,20 @@ import io
 import time
 import plotly.express as px
 import plotly.graph_objects as go
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 환경 변수 설정 ---
 load_dotenv()
-NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID")
-NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET")
+
+# Streamlit Cloud secrets 우선, 없으면 .env 환경변수 사용
+NAVER_CLIENT_ID = st.secrets.get("NAVER_CLIENT_ID", os.getenv("NAVER_CLIENT_ID"))
+NAVER_CLIENT_SECRET = st.secrets.get("NAVER_CLIENT_SECRET", os.getenv("NAVER_CLIENT_SECRET"))
+GOOGLE_SHEET_PASSWORD = st.secrets.get("GOOGLE_SHEET_PASSWORD", os.getenv("GOOGLE_SHEET_PASSWORD", "default_password"))
+SPREADSHEET_ID = st.secrets.get("GOOGLE_SPREADSHEET_ID", os.getenv("GOOGLE_SPREADSHEET_ID"))
 
 st.set_page_config(
-    page_title="내 손안의 급등주 탐지기",
+    page_title="급등주 탐지기 Pro",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -32,8 +38,8 @@ st.markdown("""
     .block-container {
         padding-top: 1rem;
         padding-bottom: 0rem;
-        padding-left: 0;
-        padding-right: 0;
+        padding-left: 10rem;
+        padding-right: 10rem;
         max-width: 100%;
     }
     .element-container {
@@ -120,9 +126,48 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 # 앱 제목
 st.markdown("""
-    <h1 style='text-align: center;'>내 손안의 급등주 탐지기</h1>
+    <h1 style='text-align: center;'>급등주 탐지기 Pro</h1>
 """, unsafe_allow_html=True)
 
+def get_google_sheet():
+    SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    CREDENTIALS_FILE = 'credentials.json'
+    SPREADSHEET_ID = st.secrets.get("GOOGLE_SPREADSHEET_ID", os.getenv("GOOGLE_SPREADSHEET_ID"))
+    try:
+        if not os.path.exists(CREDENTIALS_FILE):
+            st.error(f"오류: {CREDENTIALS_FILE} 파일이 존재하지 않습니다.")
+            return None
+        if not SPREADSHEET_ID:
+            st.error("오류: GOOGLE_SPREADSHEET_ID 환경 변수가 설정되지 않았습니다.")
+            return None
+        credentials = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, SCOPES)
+        client = gspread.authorize(credentials)
+        sheet = client.open_by_key(SPREADSHEET_ID)
+        return sheet
+    except Exception as e:
+        st.error(f"구글 시트 연결 중 오류 발생: {e}")
+        return None
+
+def update_google_sheet(data_df, date_str):
+    if data_df is None or data_df.empty:
+        return False, "업데이트할 데이터가 없습니다."
+    try:
+        sheet = get_google_sheet()
+        if not sheet:
+            return False, "구글 시트 연결 실패"
+        year_month = f"{date_str[:4]}-{date_str[4:6]}"
+        worksheet_name = f"{year_month}"
+        try:
+            worksheet = sheet.worksheet(worksheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = sheet.add_worksheet(title=worksheet_name, rows=2000, cols=30)
+        worksheet.clear()
+        worksheet.update([list(data_df.columns)], f'A1')
+        worksheet.update(data_df.values.tolist(), f'A2')
+        return True, f"구글 시트 업데이트 완료 (추가된 데이터: {len(data_df)}개)"
+    except Exception as e:
+        return False, f"구글 시트 업데이트 실패: {str(e)}"
+    
 def load_company_info_from_krx_url(krx_url, column_names_map):
     """KRX에서 제공하는 URL로부터 상장법인목록 데이터를 HTML 테이블 형식으로 로드합니다."""
     try:
@@ -567,7 +612,7 @@ def display_analysis_results(final_df_sorted, date_str, all_market_data_df, top_
         st.subheader("급등주+특징주 데이터 내보내기")
         excel_data = get_excel_data(final_df_sorted, date_str)
         txt_data = get_txt_data(final_df_sorted)
-        col1, col2, col3 = st.columns([1,1,1])
+        col1, col2, col3, col4 = st.columns([1,1,1,1])
         with col1:
             st.download_button(
                 label="Excel 다운로드",
@@ -585,6 +630,14 @@ def display_analysis_results(final_df_sorted, date_str, all_market_data_df, top_
                 key=f"txt_download_{date_str}"
             )
         with col3:
+            if st.button("구글 시트로 내보내기", key=f"google_sheet_{date_str}"):
+                with st.spinner("구글 시트로 내보내는 중..."):
+                    success, msg = update_google_sheet(final_df_sorted, date_str)
+                    if success:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+        with col4:
             if 'db_save_state' not in st.session_state:
                 st.session_state.db_save_state = None
             if 'db_overwrite_state' not in st.session_state:
@@ -774,8 +827,6 @@ def init_database():
                 거래대금 INTEGER,
                 시장 TEXT,
                 비고 TEXT,
-                테마 TEXT,
-                AI_한줄요약 TEXT,
                 기사제목1 TEXT,
                 기사요약1 TEXT,
                 기사링크1 TEXT,
@@ -1079,69 +1130,6 @@ def create_industry_distribution_bar(df):
     )
     return fig
 
-def batch_generate_theme_and_summary_with_perplexity_by_name(df, batch_size=10):
-    import requests, os
-    def parse_perplexity_markdown_response(output):
-        results = {}
-        current_stock = None
-        theme = ""
-        summary = ""
-        for line in output.splitlines():
-            line = line.strip()
-            if line.startswith("### "):
-                if current_stock and (theme or summary):
-                    results[current_stock] = (theme, summary)
-                current_stock = line.replace("###", "").strip()
-                theme = ""
-                summary = ""
-            elif line.startswith("- **테마**:"):
-                theme = line.replace("- **테마**:", "").strip()
-            elif line.startswith("- **AI_한줄요약**:"):
-                summary = line.replace("- **AI_한줄요약**:", "").strip()
-        if current_stock and (theme or summary):
-            results[current_stock] = (theme, summary)
-        return results
-
-    results = {}
-    for start in range(0, len(df), batch_size):
-        batch = df.iloc[start:start+batch_size]
-        prompt = (
-            "아래는 여러 종목명 리스트입니다.\n"
-            "각 종목에 대해 웹 검색을 참고해서\n"
-            "[테마]: (1~3개, 예: 2차전지, 양극재, 음극재, 전해질, 전고체배터리, 리튬, 희토류, 반도체, 파운드리, AI, 챗GPT, AI반도체, 빅데이터, 스마트팩토리, 로봇, 자율주행, 모빌리티, 전기차, 수소차, 전력반도체, 디스플레이, OLED, QD, UAM, 클라우드, 5G, 6G, 메타버스, VR, AR, XR, IoT, 모바일, 앱, 사이버보안, 디지털화폐, 블록체인, NFT, 이커머스, OTT, 콘텐츠, 웹툰, 게임, 모바일게임, 스트리밍, 미디어, 바이오, 제약, mRNA, 항암제, 줄기세포, 유전자치료제, 의료기기, AI진단, 정밀의료, 스마트헬스케어, 건강기능식품, 원전, SMR, 탄소중립, 풍력, 태양광, 수소경제, 전력시장, 재건축, 재개발, 공공주택, SOC투자, 방산, 국방예산, 디지털정부, 교육개혁, 저출산, 고령화, 데이터3법, 반도체법, IRA법, RCEP, FTA, 정치인테마, 리오프닝, 여행, 항공, 면세점, 화장품, 역직구, 엔터, KPOP, 한류, 중국소비, 일본관광, 중동이슈, 우크라이나, 국제유가, 금리인상, 환율수혜, 달러강세, 곡물, 사료, 식량위기, ESG, 신규상장, IPO, 스팩합병, 자회사상장, M&A, 경영권분쟁, 실적호전, 적자탈출, 자사주매입, 투자주의종목, 상폐위기, 코스닥150편입, 거래정지해제)\n"
-            "[AI_한줄요약]: (최근 이슈나 상승/하락 이유를 한 문장으로, 60토큰을 넘지 않게, 요약 형식으로, 주어 서술어 생략, 주제 중심으로 작성 )\n"
-            "**표시나 [1][2]같은 출처 관련 표시도 넣지 말 것"
-            "형식:\n"
-            "### 종목명\n- **테마**: ○○, ○○\n- **AI_한줄요약**: ○○○○○○\n\n"
-        )
-        for idx, row in batch.iterrows():
-            prompt += f"[{row['종목명']}]\n"
-        try:
-            response = requests.post(
-                "https://api.perplexity.ai/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {os.getenv('PERPLEXITY_API_KEY')}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "sonar",
-                    "messages": [
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.4,
-                    "max_tokens": 3000
-                },
-                timeout=60
-            )
-            resp_json = response.json()
-            print("Perplexity API 응답:", resp_json)
-            output = resp_json.get("choices", [])[0].get("message", {}).get("content", "")
-            results.update(parse_perplexity_markdown_response(output))
-        except Exception as e:
-            print("Perplexity API 호출 오류:", e)
-            continue
-    return results
-
 # --- Streamlit UI ---
 
 # 앱 시작시 데이터베이스 초기화
@@ -1155,8 +1143,30 @@ if 'analysis_date' not in st.session_state:
 if 'all_market_data' not in st.session_state:
     st.session_state.all_market_data = None
 
-# 3개의 탭 생성 (복원)
-tab1, tab2, tab3 = st.tabs(["실시간 분석", "데이터베이스", "인포그래픽"])
+def read_google_sheet(worksheet_name=None):
+    sheet = get_google_sheet()
+    if not sheet:
+        st.error("구글 시트 연결 실패")
+        return None, []
+    worksheet_list = sheet.worksheets()
+    worksheet_names = [ws.title for ws in worksheet_list]
+    if not worksheet_names:
+        st.warning("구글 시트에 워크시트가 없습니다.")
+        return None, worksheet_names
+    # 워크시트 선택
+    if worksheet_name is None:
+        worksheet_name = worksheet_names[-1]  # 기본값: 마지막 워크시트
+    worksheet = sheet.worksheet(worksheet_name)
+    data = worksheet.get_all_records()
+    if not data:
+        st.warning(f"{worksheet_name} 워크시트에 데이터가 없습니다.")
+        return None, worksheet_names
+    import pandas as pd
+    df = pd.DataFrame(data)
+    return df, worksheet_names
+
+# 4개의 탭 생성 (복원)
+tab1, tab2, tab3, tab4 = st.tabs(["실시간 분석", "데이터베이스", "인포그래픽", "구글 시트 보기"])
 
 # 실시간 분석 탭
 with tab1:
@@ -1375,35 +1385,6 @@ with tab1:
             progress_bar.progress(0.90, text="데이터 정렬 중...")
             final_df_sorted = final_df.sort_values(by='등락률', ascending=False)
 
-            # Perplexity AI 요약 및 테마 일괄 추출 (종목명만 사용)
-            final_df_sorted["테마"] = ""
-            final_df_sorted["AI_한줄요약"] = ""
-            if not final_df_sorted.empty:
-                progress_bar.progress(0.92, text="AI 테마/요약 일괄 생성 중...")
-                results = batch_generate_theme_and_summary_with_perplexity_by_name(final_df_sorted, batch_size=10)
-                final_df_sorted["테마"] = final_df_sorted["종목명"].map(lambda x: results.get(x, ("",""))[0])
-                final_df_sorted["AI_한줄요약"] = final_df_sorted["종목명"].map(lambda x: results.get(x, ("",""))[1])
-                progress_bar.progress(0.99, text="AI 테마/요약 반영 완료")
-
-            # DB 컬럼명과 일치시키기 (AI_한줄요약 → AI_한줄요약)
-            if "AI_한줄요약" in final_df_sorted.columns:
-                final_df_sorted.rename(columns={"AI_한줄요약": "AI_한줄요약"}, inplace=True)
-
-            # 컬럼 순서 및 DB 저장 컬럼 리스트 명시
-            db_columns = [
-                '날짜', '티커', '종목명', '테마', 'AI_한줄요약',  # 종목명 뒤에 테마, AI_한줄요약
-                '업종', '주요제품', '시가', '고가', '저가', '종가', '등락률', '거래량', '거래대금', '시장', '비고',
-                '기사제목1', '기사요약1', '기사링크1',
-                '기사제목2', '기사요약2', '기사링크2',
-                '기사제목3', '기사요약3', '기사링크3',
-                '기사제목4', '기사요약4', '기사링크4',
-                '기사제목5', '기사요약5', '기사링크5'
-            ]
-            for col in db_columns:
-                if col not in final_df_sorted.columns:
-                    final_df_sorted[col] = ""
-            final_df_sorted = final_df_sorted[db_columns]
-
             progress_bar.progress(0.95, text="분석 결과 저장 중...")
 
             # 분석 결과를 세션 상태에 저장
@@ -1465,7 +1446,7 @@ with tab2:
             if not period_data.empty:
                 # 컬럼 순서 재정렬: 종목명 뒤에 테마, AI_한줄요약
                 db_columns = [
-                    '날짜', '티커', '종목명', '테마', 'AI_한줄요약',
+                    '날짜', '티커', '종목명',
                     '업종', '주요제품', '시가', '고가', '저가', '종가', '등락률', '거래량', '거래대금', '시장', '비고',
                     '기사제목1', '기사요약1', '기사링크1',
                     '기사제목2', '기사요약2', '기사링크2',
@@ -1569,6 +1550,27 @@ with tab3:
     else:
         st.info("저장된 분석 결과가 없습니다.")
 
+# 구글 시트 보기 탭
+with tab4:
+    st.subheader("구글 시트 데이터 보기")
+    # 워크시트 목록 불러오기 및 선택
+    sheet = get_google_sheet()
+    if sheet:
+        worksheet_list = sheet.worksheets()
+        worksheet_names = [ws.title for ws in worksheet_list]
+        if worksheet_names:
+            selected_ws = st.selectbox("워크시트 선택", worksheet_names, index=len(worksheet_names)-1)
+            df, _ = read_google_sheet(selected_ws)
+            if df is not None and not df.empty:
+                st.dataframe(df, use_container_width=True)
+                st.success(f"{selected_ws} 워크시트의 데이터를 불러왔습니다.")
+            else:
+                st.warning(f"{selected_ws} 워크시트에 데이터가 없습니다.")
+        else:
+            st.warning("구글 시트에 워크시트가 없습니다.")
+    else:
+        st.error("구글 시트 연결 실패")
+
 # 도움말
 with st.expander("도움말"):
     st.markdown("""
@@ -1625,3 +1627,28 @@ with st.expander("도움말"):
     - 오류/건의사항은 개발자에게 직접 문의해 주세요.
     - [이메일: hellolk2000@gmail.com]
     """)
+
+def read_google_sheet(worksheet_name=None):
+    sheet = get_google_sheet()
+    if not sheet:
+        st.error("구글 시트 연결 실패")
+        return None
+    # 워크시트 목록 가져오기
+    worksheet_list = sheet.worksheets()
+    worksheet_names = [ws.title for ws in worksheet_list]
+    if not worksheet_names:
+        st.warning("구글 시트에 워크시트가 없습니다.")
+        return None
+    # 워크시트 선택
+    if worksheet_name is None:
+        worksheet_name = worksheet_names[-1]  # 기본값: 마지막 워크시트
+    worksheet = sheet.worksheet(worksheet_name)
+    data = worksheet.get_all_records()
+    if not data:
+        st.warning(f"{worksheet_name} 워크시트에 데이터가 없습니다.")
+        return None
+    import pandas as pd
+    df = pd.DataFrame(data)
+    return df, worksheet_names
+
+
