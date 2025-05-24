@@ -196,11 +196,11 @@ def load_company_info_from_krx_url(krx_url, column_names_map):
         
         try:
             try:
-                dfs = pd.read_html(io.StringIO(response.text), header=0)
+                dfs = pd.read_html(io.StringIO(response.text), header=0, flavor='html5lib')
             except UnicodeDecodeError:
-                dfs = pd.read_html(io.StringIO(response.content.decode('cp949')), header=0)
+                dfs = pd.read_html(io.StringIO(response.content.decode('cp949')), header=0, flavor='html5lib')
             except Exception as e_decode_generic:
-                dfs = pd.read_html(io.StringIO(response.content.decode('utf-8', errors='replace')), header=0)
+                dfs = pd.read_html(io.StringIO(response.content.decode('utf-8', errors='replace')), header=0, flavor='html5lib')
 
             if not dfs:
                 st.warning("HTML에서 테이블을 찾지 못했습니다.")
