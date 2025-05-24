@@ -19,11 +19,15 @@ from oauth2client.service_account import ServiceAccountCredentials
 # --- 환경 변수 설정 ---
 load_dotenv()
 
-# Streamlit Cloud secrets 우선, 없으면 .env 환경변수 사용
-NAVER_CLIENT_ID = st.secrets.get("NAVER_CLIENT_ID", os.getenv("NAVER_CLIENT_ID"))
-NAVER_CLIENT_SECRET = st.secrets.get("NAVER_CLIENT_SECRET", os.getenv("NAVER_CLIENT_SECRET"))
-GOOGLE_SHEET_PASSWORD = st.secrets.get("GOOGLE_SHEET_PASSWORD", os.getenv("GOOGLE_SHEET_PASSWORD", "default_password"))
-SPREADSHEET_ID = st.secrets.get("GOOGLE_SPREADSHEET_ID", os.getenv("GOOGLE_SPREADSHEET_ID"))
+# 환경변수 설정 함수
+
+def get_config(key, default=None):
+    return st.secrets.get(key, os.getenv(key, default))
+
+NAVER_CLIENT_ID = get_config("NAVER_CLIENT_ID")
+NAVER_CLIENT_SECRET = get_config("NAVER_CLIENT_SECRET")
+GOOGLE_SHEET_PASSWORD = get_config("GOOGLE_SHEET_PASSWORD", "default_password")
+SPREADSHEET_ID = get_config("GOOGLE_SPREADSHEET_ID")
 
 st.set_page_config(
     page_title="급등주 탐지기 Pro",
@@ -121,8 +125,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 빈 공간 추가
-st.markdown("<br>", unsafe_allow_html=True)
 
 # 앱 제목
 st.markdown("""
@@ -161,9 +163,22 @@ def update_google_sheet(data_df, date_str):
             worksheet = sheet.worksheet(worksheet_name)
         except gspread.exceptions.WorksheetNotFound:
             worksheet = sheet.add_worksheet(title=worksheet_name, rows=2000, cols=30)
-        worksheet.clear()
-        worksheet.update([list(data_df.columns)], f'A1')
-        worksheet.update(data_df.values.tolist(), f'A2')
+        
+        # 기존 데이터 읽기
+        existing_data = worksheet.get_all_values()
+
+        # 새로운 데이터 준비
+        new_data = data_df.values.tolist()
+
+        if len(existing_data) <= 1:  # 헤더만 있거나 데이터가 없는 경우
+            # 헤더와 새로운 데이터 추가
+            worksheet.update([list(data_df.columns)], f'A1')
+            worksheet.update(new_data, f'A2')
+        else:
+            # 마지막 행 다음에 새로운 데이터 추가
+            last_row = len(existing_data)
+            worksheet.update(new_data, f'A{last_row + 1}')
+        
         return True, f"구글 시트 업데이트 완료 (추가된 데이터: {len(data_df)}개)"
     except Exception as e:
         return False, f"구글 시트 업데이트 실패: {str(e)}"
@@ -1627,28 +1642,3 @@ with st.expander("도움말"):
     - 오류/건의사항은 개발자에게 직접 문의해 주세요.
     - [이메일: hellolk2000@gmail.com]
     """)
-
-def read_google_sheet(worksheet_name=None):
-    sheet = get_google_sheet()
-    if not sheet:
-        st.error("구글 시트 연결 실패")
-        return None
-    # 워크시트 목록 가져오기
-    worksheet_list = sheet.worksheets()
-    worksheet_names = [ws.title for ws in worksheet_list]
-    if not worksheet_names:
-        st.warning("구글 시트에 워크시트가 없습니다.")
-        return None
-    # 워크시트 선택
-    if worksheet_name is None:
-        worksheet_name = worksheet_names[-1]  # 기본값: 마지막 워크시트
-    worksheet = sheet.worksheet(worksheet_name)
-    data = worksheet.get_all_records()
-    if not data:
-        st.warning(f"{worksheet_name} 워크시트에 데이터가 없습니다.")
-        return None
-    import pandas as pd
-    df = pd.DataFrame(data)
-    return df, worksheet_names
-
-
